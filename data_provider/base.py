@@ -981,3 +981,24 @@ class DataFetcherManager:
                 logger.warning(f"[{fetcher.name}] 获取板块排行失败: {e}")
                 continue
         return [], []
+
+    def get_all_sectors(self) -> List[Dict]:
+        """Return all sectors sorted by change_pct desc, with rank and total fields added.
+
+        Uses n=200 (well above the ~104 A-share industry sectors) so that nlargest(200)
+        returns the full sorted list in a single API call per fetcher attempt.
+        """
+        for fetcher in self._fetchers:
+            try:
+                data = fetcher.get_sector_rankings(n=200)
+                if data:
+                    all_sectors, _ = data  # top-200 covers all sectors; ignore bottom duplicate
+                    total = len(all_sectors)
+                    for i, s in enumerate(all_sectors):
+                        s['rank'] = i + 1
+                        s['total'] = total
+                    logger.info(f"[{fetcher.name}] get_all_sectors: {total} sectors")
+                    return all_sectors
+            except Exception as e:
+                logger.warning(f"[{fetcher.name}] get_all_sectors failed: {e}")
+        return []

@@ -140,6 +140,7 @@
 | `AGENT_MAX_STEPS` | Agent 最大推理步数（默认 10） | 可选 |
 | `AGENT_STRATEGY_DIR` | 自定义策略目录（默认内置 `strategies/`） | 可选 |
 | `TRADING_DAY_CHECK_ENABLED` | 交易日检查（默认 `true`）：非交易日跳过执行；设为 `false` 或使用 `--force-run` 强制执行 | 可选 |
+| `MARKET_REVIEW_WATCHED_SECTORS` | 大盘复盘关注板块（逗号分隔，模糊匹配，如 `半导体,新能源车`），配置后复盘报告新增「关注板块追踪」章节含资讯链接 | 可选 |
 
 #### 3. 启用 Actions
 

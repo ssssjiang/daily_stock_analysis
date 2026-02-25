@@ -1,0 +1,132 @@
+---
+description: Codebase overview for daily_stock_analysis project - directory structure, data flow, modules, and asset type support
+alwaysApply: true
+---
+
+# Codebase Overview: daily_stock_analysis
+
+## Directory Structure
+
+**Top-level:**
+- `main.py` - main entry point
+- `server.py` - server entry
+- `webui.py` - Web UI entry
+- `analyzer_service.py` - analysis service
+- `.env` / `.env.example` - configuration
+
+**Core directories:**
+- `src/` - core business logic
+  - `src/core/` - pipeline, market_review, trading_calendar, backtest_engine
+  - `src/agent/` - Agent mode (executor, tools, skills, llm_adapter)
+  - `src/services/` - service layer (backtest_service, analysis_service, stock_service)
+  - `src/repositories/` - data access layer
+  - `src/analyzer.py` - AI analyzer (GeminiAnalyzer)
+  - `src/notification.py` - notification service
+  - `src/search_service.py` - news search service
+  - `src/stock_analyzer.py` - trend analyzer (StockTrendAnalyzer)
+  - `src/config.py` - config management (Config dataclass, singleton)
+  - `src/storage.py` - database storage
+- `data_provider/` - data source layer
+  - `base.py` - BaseFetcher + DataFetcherManager (failover)
+  - `efinance_fetcher.py`, `akshare_fetcher.py`, `tushare_fetcher.py`
+  - `yfinance_fetcher.py` (US stocks), `pytdx_fetcher.py`, `baostock_fetcher.py`
+  - `us_index_mapping.py` - US index mapping (SPX→^GSPC etc.)
+  - `realtime_types.py` - realtime quote type definitions
+- `api/` - FastAPI REST API (v1 endpoints, schemas, middlewares)
+- `bot/` - bot platform integration (dingtalk, feishu, discord, telegram)
+- `apps/` - frontend
+- `tests/` - tests
+- `docs/` - documentation
+- `strategies/` - Agent strategy definitions
+- `scripts/` - utility scripts
+
+## Run Modes
+
+```
+python main.py               # immediate analysis
+python main.py --schedule    # scheduled execution
+python main.py --webui       # Web UI + API server
+python main.py --market-review  # market review only
+python main.py --backtest    # backtest mode
+```
+
+## Data Flow
+
+```
+main.py
+  → StockAnalysisPipeline.run()
+    → process_single_stock() (concurrent)
+      → fetch_and_save_stock_data()     # historical K-line
+      → analyze_stock()
+          → DataFetcherManager.get_realtime_quote()
+          → DataFetcherManager.get_chip_distribution()
+          → StockTrendAnalyzer
+          → SearchService.search_comprehensive_intel()
+          → GeminiAnalyzer.analyze() or AgentExecutor.run()
+      → single stock notify (optional)
+    → NotificationService (batch push)
+  → run_market_review() (optional)
+```
+
+## Data Provider Priority (auto failover)
+
+1. TushareFetcher (Priority 0) - requires TUSHARE_TOKEN
+2. EfinanceFetcher (Priority 0)
+3. AkshareFetcher (Priority 1) - sina/tencent/em sources
+4. PytdxFetcher (Priority 2)
+5. BaostockFetcher (Priority 3)
+6. YfinanceFetcher (Priority 4) - US stocks only
+
+**Key class:** `DataFetcherManager` in `data_provider/base.py`
+
+## Asset Type Support
+
+| Type | Format | Example | Data Source |
+|------|--------|---------|-------------|
+| A-share | 6 digits | `600519` | Efinance/Akshare/Tushare/Pytdx/Baostock |
+| HK stock | `HK` prefix or 5 digits | `HK00700` | AkshareFetcher |
+| US stock | 1-5 uppercase letters | `AAPL`, `BRK.B` | YfinanceFetcher |
+| US index | fixed codes | `SPX`, `DJI`, `IXIC` | YfinanceFetcher |
+| A-share ETF | prefix 51/52/56/58/15/16/18 | `510300` | Same as A-share |
+
+**Key files for asset identification:**
+- `data_provider/us_index_mapping.py` - `is_us_stock_code()`, `is_us_index_code()`, `US_INDEX_MAPPING`
+- `data_provider/akshare_fetcher.py` - `is_hk_stock_code()`
+- `src/search_service.py` - `SearchService.is_index_or_etf()`
+- `src/core/trading_calendar.py` - `get_market_for_stock()`, `is_market_open()`
+
+## Configuration System
+
+**`src/config.py`** - `Config` dataclass, singleton via `Config.get_instance()`
+
+Key config items:
+- `stock_list` - comma-separated, e.g. `600519,hk00700,AAPL,SPX`
+- AI models: Gemini / Anthropic / OpenAI-compatible (AIHubMix)
+- Search: Bocha / Tavily / Brave / SerpAPI (multi-key load balancing)
+- Notifications: WeChat, Feishu, Telegram, Email, Pushover, PushPlus, Server酱3, Discord, custom Webhook
+- `enable_realtime_quote`, `realtime_source_priority`
+- `enable_chip_distribution`
+- `market_review_enabled`, `market_review_region` (cn/us/both)
+- `trading_day_check_enabled`
+- `agent_mode`, `agent_max_steps`, `agent_strategy_dir`
+- Hot reload: `config.refresh_stock_list()`
+
+## Notification Channels
+
+`src/notification.py` - `NotificationService`
+
+Channels: WeChat Webhook, Feishu Webhook, Telegram Bot, SMTP Email, Pushover, PushPlus, Server酱3, custom Webhook, Discord, AstrBot
+
+Report types: `simple` (default), `full`
+
+Push modes:
+- Batch push: all stocks complete then push together
+- Single push: `single_stock_notify=true` - push immediately after each stock
+- Merged push: `merge_email_notification=true` - merge individual + market review
+
+## Market Region Support
+
+- A-share (`cn`): Shanghai + Shenzhen, timezone Asia/Shanghai
+- HK (`hk`): HKEX, timezone Asia/Hong_Kong
+- US (`us`): NYSE + NASDAQ, timezone America/New_York
+- Market review: supports `cn` / `us` / `both`

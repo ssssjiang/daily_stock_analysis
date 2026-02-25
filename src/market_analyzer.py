@@ -74,6 +74,8 @@ class MarketOverview:
     # 板块涨幅榜
     top_sectors: List[Dict] = field(default_factory=list)     # 涨幅前5板块
     bottom_sectors: List[Dict] = field(default_factory=list)  # 跌幅前5板块
+    # Watched sectors (user-configured); each dict: {name, change_pct, rank, total, news}
+    watched_sectors: List[Dict] = field(default_factory=list)
 
 
 class MarketAnalyzer:
@@ -197,18 +199,35 @@ class MarketAnalyzer:
             logger.error(f"[大盘] 获取涨跌统计失败: {e}")
 
     def _get_sector_rankings(self, overview: MarketOverview):
-        """获取板块涨跌榜"""
+        """Fetch sector rankings and populate top5, bottom5, and watched sectors."""
         try:
             logger.info("[大盘] 获取板块涨跌榜...")
 
-            top_sectors, bottom_sectors = self.data_manager.get_sector_rankings(5)
+            all_sectors = self.data_manager.get_all_sectors()
+            if not all_sectors:
+                return
 
-            if top_sectors or bottom_sectors:
-                overview.top_sectors = top_sectors
-                overview.bottom_sectors = bottom_sectors
+            overview.top_sectors = all_sectors[:5]
+            overview.bottom_sectors = list(reversed(all_sectors[-5:]))
 
-                logger.info(f"[大盘] 领涨板块: {[s['name'] for s in overview.top_sectors]}")
-                logger.info(f"[大盘] 领跌板块: {[s['name'] for s in overview.bottom_sectors]}")
+            logger.info(f"[大盘] 领涨板块: {[s['name'] for s in overview.top_sectors]}")
+            logger.info(f"[大盘] 领跌板块: {[s['name'] for s in overview.bottom_sectors]}")
+
+            watched_names = self.config.market_review_watched_sectors
+            if watched_names:
+                for name in watched_names:
+                    match = next(
+                        (s for s in all_sectors if name in s['name'] or s['name'] in name),
+                        None,
+                    )
+                    if match:
+                        overview.watched_sectors.append(dict(match, news=[]))
+                        logger.info(
+                            f"[大盘] 关注板块 '{name}' 匹配为 '{match['name']}' "
+                            f"(排名 {match['rank']}/{match['total']}, {match['change_pct']:+.2f}%)"
+                        )
+                    else:
+                        logger.warning(f"[大盘] 关注板块 '{name}' 未找到匹配，跳过")
 
         except Exception as e:
             logger.error(f"[大盘] 获取板块涨跌榜失败: {e}")
@@ -274,7 +293,27 @@ class MarketAnalyzer:
             logger.error(f"[大盘] 搜索市场新闻失败: {e}")
         
         return all_news
-    
+
+    def _search_watched_sector_news(self, overview: MarketOverview):
+        """Search news for each watched sector and attach results to the sector dict."""
+        if not self.search_service or not overview.watched_sectors:
+            return
+        for sector in overview.watched_sectors:
+            try:
+                resp = self.search_service.search_stock_news(
+                    stock_code="sector",
+                    stock_name=sector['name'],
+                    max_results=3,
+                    focus_keywords=[sector['name'], "板块", "行情"],
+                )
+                sector['news'] = resp.results if resp and resp.success else []
+                logger.info(
+                    f"[大盘] 关注板块 '{sector['name']}' 搜索到 {len(sector['news'])} 条资讯"
+                )
+            except Exception as e:
+                logger.warning(f"[大盘] 关注板块 '{sector['name']}' 资讯搜索失败: {e}")
+                sector['news'] = []
+
     def generate_market_review(self, overview: MarketOverview, news: List) -> str:
         """
         使用大模型生成大盘复盘报告
@@ -327,12 +366,11 @@ class MarketAnalyzer:
     
     def _inject_data_into_review(self, review: str, overview: MarketOverview) -> str:
         """Inject structured data tables into the corresponding LLM prose sections."""
-        import re
-
         # Build data blocks
         stats_block = self._build_stats_block(overview)
         indices_block = self._build_indices_block(overview)
         sector_block = self._build_sector_block(overview)
+        watched_block = self._build_watched_sector_block(overview)
 
         # Inject market stats after "### 一、市场总结" section (before next ###)
         if stats_block:
@@ -345,6 +383,17 @@ class MarketAnalyzer:
         # Inject sector rankings after "### 四、热点解读" section
         if sector_block:
             review = self._insert_after_section(review, r'###\s*四、热点解读', sector_block)
+
+        # Inject watched sector news links after "### 五、关注板块追踪" section;
+        # fall back to appending the entire section if LLM omitted it.
+        if watched_block:
+            import re
+            if re.search(r'###\s*五、关注板块追踪', review):
+                review = self._insert_after_section(
+                    review, r'###\s*五、关注板块追踪', watched_block
+                )
+            else:
+                review = review.rstrip() + "\n\n### 五、关注板块追踪\n\n" + watched_block
 
         return review
 
@@ -417,6 +466,30 @@ class MarketAnalyzer:
             lines.append(f"> 💧 领跌: {bot}")
         return "\n".join(lines)
 
+    def _build_watched_sector_block(self, overview: MarketOverview) -> str:
+        """Build the watched sector news-link block to be injected after LLM prose.
+
+        Format per sector:
+            > **板块名** +2.31%  |  全市场第 4 / 104 名
+            > - [标题](url)（来源）
+        """
+        if not overview.watched_sectors:
+            return ""
+        lines = []
+        for s in overview.watched_sectors:
+            lines.append(
+                f"\n> **{s['name']}** {s['change_pct']:+.2f}%"
+                f"  |  全市场第 {s['rank']} / {s['total']} 名"
+            )
+            news_items = s.get('news', [])
+            for n in news_items[:3]:
+                url = getattr(n, 'url', None) or (n.get('url', '') if isinstance(n, dict) else '')
+                title = getattr(n, 'title', None) or (n.get('title', '') if isinstance(n, dict) else '')
+                source = getattr(n, 'source', None) or (n.get('source', '') if isinstance(n, dict) else '')
+                if url and title:
+                    lines.append(f"> - [{title}]({url})（{source}）")
+        return "\n".join(lines)
+
     def _build_review_prompt(self, overview: MarketOverview, news: List) -> str:
         """构建复盘报告 Prompt"""
         # 指数行情信息（简洁格式，不用emoji）
@@ -483,6 +556,15 @@ Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}"""
         indices_placeholder = indices_text if indices_text else ("No index data (API error)" if self.region == "us" else "暂无指数数据（接口异常）")
         news_placeholder = news_text if news_text else ("No relevant news" if self.region == "us" else "暂无相关新闻")
 
+        # Watched sectors summary for CN prompt (quantitative data only; URLs injected later)
+        watched_block_prompt = ""
+        if self.region != "us" and overview.watched_sectors:
+            lines = [
+                f"- {s['name']}：{s['change_pct']:+.2f}%，全市场排名 {s['rank']}/{s['total']}"
+                for s in overview.watched_sectors
+            ]
+            watched_block_prompt = "## 关注板块\n" + "\n".join(lines)
+
         # 美股场景使用英文提示语，便于生成更符合美股语境的报告
         if self.region == "us":
             data_no_indices_hint_en = (
@@ -547,6 +629,13 @@ Output the report content directly, no extra commentary.
 """
 
         # A 股场景使用中文提示语
+        watched_section_template = ""
+        if overview.watched_sectors:
+            watched_names = "、".join(s['name'] for s in overview.watched_sectors)
+            watched_section_template = f"""
+### 五、关注板块追踪
+（针对关注板块 {watched_names} 逐一简析今日表现及驱动因素，每个板块各 1-2 句）
+"""
         return f"""你是一位专业的A/H/美股市场分析师，请根据以下数据生成一份简洁的大盘复盘报告。
 
 【重要】输出要求：
@@ -568,6 +657,8 @@ Output the report content directly, no extra commentary.
 {stats_block}
 
 {sector_block}
+
+{watched_block_prompt}
 
 ## 市场新闻
 {news_placeholder}
@@ -591,11 +682,11 @@ Output the report content directly, no extra commentary.
 
 ### 四、热点解读
 （分析领涨领跌板块背后的逻辑和驱动因素）
-
-### 五、后市展望
+{watched_section_template}
+### {"六" if overview.watched_sectors else "五"}、后市展望
 （结合当前走势和新闻，给出明日市场预判）
 
-### 六、风险提示
+### {"七" if overview.watched_sectors else "六"}、风险提示
 （需要关注的风险点）
 
 ---
@@ -691,8 +782,11 @@ Output the report content directly, no extra commentary.
         
         # 2. 搜索市场新闻
         news = self.search_market_news()
-        
-        # 3. 生成复盘报告
+
+        # 3. 搜索关注板块资讯（逐板块搜索，结果含链接）
+        self._search_watched_sector_news(overview)
+
+        # 4. 生成复盘报告
         report = self.generate_market_review(overview, news)
         
         logger.info("========== 大盘复盘分析完成 ==========")

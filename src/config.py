@@ -202,6 +202,8 @@ class Config:
     market_review_enabled: bool = True        # 是否启用大盘复盘
     # 大盘复盘市场区域：cn(A股)、us(美股)、both(两者)，us 适合仅关注美股的用户
     market_review_region: str = "cn"
+    # Watched sector names for market review (fuzzy match against API sector names)
+    market_review_watched_sectors: List[str] = field(default_factory=list)
     # 交易日检查：默认启用，非交易日跳过执行；设为 false 或 --force-run 可强制执行（Issue #373）
     trading_day_check_enabled: bool = True
 
@@ -478,6 +480,9 @@ class Config:
             market_review_region=cls._parse_market_review_region(
                 os.getenv('MARKET_REVIEW_REGION', 'cn')
             ),
+            market_review_watched_sectors=[
+                s.strip() for s in os.getenv('MARKET_REVIEW_WATCHED_SECTORS', '').split(',') if s.strip()
+            ],
             trading_day_check_enabled=os.getenv('TRADING_DAY_CHECK_ENABLED', 'true').lower() != 'false',
             webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
             webui_host=os.getenv('WEBUI_HOST', '127.0.0.1'),
