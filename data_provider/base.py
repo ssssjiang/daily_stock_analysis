@@ -327,18 +327,34 @@ class BaseFetcher(ABC):
 class DataFetcherManager:
     """
     数据源策略管理器
-    
+
     职责：
     1. 管理多个数据源（按优先级排序）
     2. 自动故障切换（Failover）
     3. 提供统一的数据获取接口
-    
+
     切换策略：
     - 优先使用高优先级数据源
     - 失败后自动切换到下一个
     - 所有数据源都失败时抛出异常
+
+    单例模式：通过 get_instance() 获取全局唯一实例，避免重复初始化。
     """
-    
+
+    _instance: Optional['DataFetcherManager'] = None
+
+    @classmethod
+    def get_instance(cls, fetchers: Optional[List[BaseFetcher]] = None) -> 'DataFetcherManager':
+        """Get singleton instance. fetchers is ignored after first creation."""
+        if cls._instance is None:
+            cls._instance = cls(fetchers=fetchers)
+        return cls._instance
+
+    @classmethod
+    def reset_instance(cls) -> None:
+        """Reset singleton (for tests)."""
+        cls._instance = None
+
     def __init__(self, fetchers: Optional[List[BaseFetcher]] = None):
         """
         初始化管理器

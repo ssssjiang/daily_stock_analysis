@@ -174,7 +174,7 @@ def test_data_fetch(stock_code: str = "600519"):
     
     from data_provider import DataFetcherManager
     
-    manager = DataFetcherManager()
+    manager = DataFetcherManager.get_instance()
     
     print_section("数据源列表")
     for i, name in enumerate(manager.available_fetchers, 1):

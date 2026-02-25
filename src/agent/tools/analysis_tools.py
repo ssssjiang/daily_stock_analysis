@@ -100,7 +100,7 @@ def _handle_calculate_ma(stock_code: str, periods: Optional[str] = None, days: i
     from data_provider import DataFetcherManager
     import pandas as pd
 
-    manager = DataFetcherManager()
+    manager = DataFetcherManager.get_instance()
     df, source = manager.get_daily_data(stock_code, days=days)
 
     if df is None or df.empty:
@@ -193,7 +193,7 @@ def _handle_get_volume_analysis(stock_code: str, days: int = 30) -> dict:
     from data_provider import DataFetcherManager
     import pandas as pd
 
-    manager = DataFetcherManager()
+    manager = DataFetcherManager.get_instance()
     df, source = manager.get_daily_data(stock_code, days=max(days + 20, 60))
 
     if df is None or df.empty:
@@ -310,7 +310,7 @@ def _handle_analyze_pattern(stock_code: str, days: int = 60) -> dict:
     from data_provider import DataFetcherManager
     import pandas as pd
 
-    manager = DataFetcherManager()
+    manager = DataFetcherManager.get_instance()
     df, source = manager.get_daily_data(stock_code, days=max(days, 120))
 
     if df is None or df.empty:
