@@ -8,6 +8,7 @@ into a unified interface consumed by the AgentExecutor.
 
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -157,17 +158,31 @@ class LLMToolAdapter:
 
         last_error = None
         for p in providers_to_try:
-            try:
-                if p == "gemini" and self._gemini_available:
-                    return self._call_gemini(messages, tool_declarations.get("gemini", []))
-                elif p == "anthropic" and self._anthropic_available:
-                    return self._call_anthropic(messages, tool_declarations.get("anthropic", []))
-                elif p == "openai" and self._openai_available:
-                    return self._call_openai(messages, tool_declarations.get("openai", []))
-            except Exception as e:
-                logger.warning(f"Agent LLM call failed with {p}: {e}")
-                last_error = e
-                continue
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    if p == "gemini" and self._gemini_available:
+                        return self._call_gemini(messages, tool_declarations.get("gemini", []))
+                    elif p == "anthropic" and self._anthropic_available:
+                        return self._call_anthropic(messages, tool_declarations.get("anthropic", []))
+                    elif p == "openai" and self._openai_available:
+                        return self._call_openai(messages, tool_declarations.get("openai", []))
+                    break
+                except Exception as e:
+                    error_str = str(e)
+                    # Rate limit: back off and retry the same provider
+                    if "429" in error_str and attempt < max_retries - 1:
+                        match = re.search(r'seconds:\s*(\d+)', error_str)
+                        wait_secs = int(match.group(1)) + 2 if match else 20
+                        logger.warning(
+                            f"Agent LLM rate limited by {p}, retrying in {wait_secs}s "
+                            f"(attempt {attempt + 1}/{max_retries})"
+                        )
+                        time.sleep(wait_secs)
+                        continue
+                    logger.warning(f"Agent LLM call failed with {p}: {e}")
+                    last_error = e
+                    break
 
         error_msg = f"All LLM providers failed. Last error: {last_error}"
         logger.error(error_msg)
@@ -211,19 +226,26 @@ class LLMToolAdapter:
             elif msg["role"] == "user":
                 chat_messages.append({"role": "user", "parts": [msg["content"]]})
             elif msg["role"] == "assistant":
-                parts = []
-                if msg.get("content"):
-                    parts.append(msg["content"])
-                # Handle assistant tool_calls in history
-                if msg.get("tool_calls"):
-                    for tc in msg["tool_calls"]:
-                        parts.append(genai.protos.Part(
-                            function_call=genai.protos.FunctionCall(
-                                name=tc["name"],
-                                args=tc["arguments"]
-                            )
-                        ))
-                chat_messages.append({"role": "model", "parts": parts})
+                # Use raw Gemini Content when available to preserve thought_signature.
+                if msg.get("_gemini_raw_content") is not None:
+                    chat_messages.append({
+                        "role": "model",
+                        "parts": list(msg["_gemini_raw_content"].parts),
+                    })
+                else:
+                    # Fallback: reconstruct from parsed data (non-thinking models / other providers)
+                    parts = []
+                    if msg.get("content"):
+                        parts.append(msg["content"])
+                    if msg.get("tool_calls"):
+                        for tc in msg["tool_calls"]:
+                            parts.append(genai.protos.Part(
+                                function_call=genai.protos.FunctionCall(
+                                    name=tc["name"],
+                                    args=tc["arguments"]
+                                )
+                            ))
+                    chat_messages.append({"role": "model", "parts": parts})
             elif msg["role"] == "tool":
                 # Tool result message
                 chat_messages.append({

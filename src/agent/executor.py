@@ -461,6 +461,13 @@ class AgentExecutor:
                         for tc in response.tool_calls
                     ],
                 }
+                # Preserve raw Gemini Content so thought_signature survives into the next turn.
+                # Required for thinking models (gemini-3-flash-preview, gemini-2.5-flash, etc.).
+                if response.provider == "gemini" and response.raw is not None:
+                    try:
+                        assistant_msg["_gemini_raw_content"] = response.raw.candidates[0].content
+                    except (AttributeError, IndexError):
+                        pass
                 messages.append(assistant_msg)
 
                 # Execute tool calls — parallel when multiple, sequential when single

@@ -376,5 +376,112 @@ class TestAgentResult(unittest.TestCase):
         self.assertIsNone(r.error)
 
 
+# ============================================================
+# Gemini thought_signature preservation
+# ============================================================
+
+class TestGeminiThoughtSignature(unittest.TestCase):
+    """Verify _gemini_raw_content is stored for thinking models to preserve thought_signature."""
+
+    def test_gemini_raw_content_stored_in_history(self):
+        """Executor stores _gemini_raw_content when Gemini returns tool_calls for next-turn use."""
+        mock_content = MagicMock()
+        mock_content.parts = [MagicMock()]
+        mock_raw = MagicMock()
+        mock_raw.candidates = [MagicMock()]
+        mock_raw.candidates[0].content = mock_content
+
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+
+        step1 = LLMResponse(
+            content="Let me check.",
+            tool_calls=[ToolCall(id="c1", name="echo", arguments={"message": "hi"})],
+            usage={"total_tokens": 50},
+            provider="gemini",
+            raw=mock_raw,
+        )
+        step2 = LLMResponse(
+            content=json.dumps(SAMPLE_DASHBOARD, ensure_ascii=False),
+            tool_calls=[],
+            usage={"total_tokens": 80},
+            provider="gemini",
+        )
+        adapter.call_with_tools.side_effect = [step1, step2]
+
+        executor = AgentExecutor(registry, adapter, max_steps=5)
+        result = executor.run("Analyze 600519")
+
+        self.assertTrue(result.success)
+        self.assertEqual(adapter.call_with_tools.call_count, 2)
+        # Second call receives messages containing assistant with _gemini_raw_content
+        second_call_args = adapter.call_with_tools.call_args_list[1]
+        messages = second_call_args[0][0]
+        assistant_msgs = [m for m in messages if m.get("role") == "assistant"]
+        self.assertGreater(len(assistant_msgs), 0)
+        self.assertIn("_gemini_raw_content", assistant_msgs[0])
+        self.assertIs(assistant_msgs[0]["_gemini_raw_content"], mock_content)
+
+    def test_non_gemini_provider_does_not_store_raw_content(self):
+        """OpenAI/Anthropic responses must not pollute messages with _gemini_raw_content."""
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+
+        step1 = LLMResponse(
+            content="Checking.",
+            tool_calls=[ToolCall(id="c1", name="echo", arguments={"message": "hi"})],
+            usage={"total_tokens": 40},
+            provider="openai",
+            raw=MagicMock(),
+        )
+        step2 = LLMResponse(
+            content=json.dumps(SAMPLE_DASHBOARD),
+            tool_calls=[],
+            usage={"total_tokens": 60},
+            provider="openai",
+        )
+        adapter.call_with_tools.side_effect = [step1, step2]
+
+        executor = AgentExecutor(registry, adapter, max_steps=5)
+        result = executor.run("Analyze 600519")
+
+        self.assertTrue(result.success)
+        second_call_args = adapter.call_with_tools.call_args_list[1]
+        messages = second_call_args[0][0]
+        assistant_msgs = [m for m in messages if m.get("role") == "assistant"]
+        self.assertGreater(len(assistant_msgs), 0)
+        self.assertNotIn("_gemini_raw_content", assistant_msgs[0])
+
+    def test_gemini_raw_content_fallback_when_raw_is_none(self):
+        """When response.raw is None (e.g. fallback path), no _gemini_raw_content and no crash."""
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+
+        step1 = LLMResponse(
+            content="Checking.",
+            tool_calls=[ToolCall(id="c1", name="echo", arguments={"message": "hi"})],
+            usage={"total_tokens": 40},
+            provider="gemini",
+            raw=None,
+        )
+        step2 = LLMResponse(
+            content=json.dumps(SAMPLE_DASHBOARD),
+            tool_calls=[],
+            usage={"total_tokens": 60},
+            provider="gemini",
+        )
+        adapter.call_with_tools.side_effect = [step1, step2]
+
+        executor = AgentExecutor(registry, adapter, max_steps=5)
+        result = executor.run("Analyze 600519")
+
+        self.assertTrue(result.success)
+        second_call_args = adapter.call_with_tools.call_args_list[1]
+        messages = second_call_args[0][0]
+        assistant_msgs = [m for m in messages if m.get("role") == "assistant"]
+        self.assertGreater(len(assistant_msgs), 0)
+        self.assertNotIn("_gemini_raw_content", assistant_msgs[0])
+
+
 if __name__ == '__main__':
     unittest.main()
