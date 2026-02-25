@@ -198,6 +198,43 @@ class MarketAnalyzer:
         except Exception as e:
             logger.error(f"[大盘] 获取涨跌统计失败: {e}")
 
+    def _match_sector(self, keyword: str, all_sectors: List[Dict]) -> Optional[Dict]:
+        """
+        Match watched sector name with actual sector name from API.
+        
+        Supports flexible matching:
+        - Exact substring match (e.g., '半导体' in '半导体行业')
+        - Industry suffix handling (e.g., '半导体' matches '半导体行业')
+        - Reverse substring match (e.g., '有色金属' matches '有色金属')
+        """
+        if not keyword or not all_sectors:
+            return None
+        
+        # First try: exact substring match
+        for sector in all_sectors:
+            sector_name = sector.get('name', '')
+            if keyword in sector_name or sector_name in keyword:
+                return sector
+        
+        # Second try: match with industry suffix handling
+        # Remove common suffixes and try matching
+        suffix_variants = ['行业', '产业', '板块', '概念', '类']
+        
+        for sector in all_sectors:
+            sector_name = sector.get('name', '')
+            
+            # Try matching keyword with suffix added
+            for suffix in suffix_variants:
+                if sector_name == keyword + suffix:
+                    return sector
+                # Also try removing suffix from sector name
+                if sector_name.endswith(suffix):
+                    name_without_suffix = sector_name[:-len(suffix)]
+                    if name_without_suffix == keyword:
+                        return sector
+        
+        return None
+
     def _get_sector_rankings(self, overview: MarketOverview):
         """Fetch sector rankings and populate top5, bottom5, and watched sectors."""
         try:
@@ -216,10 +253,7 @@ class MarketAnalyzer:
             watched_names = self.config.market_review_watched_sectors
             if watched_names:
                 for name in watched_names:
-                    match = next(
-                        (s for s in all_sectors if name in s['name'] or s['name'] in name),
-                        None,
-                    )
+                    match = self._match_sector(name, all_sectors)
                     if match:
                         overview.watched_sectors.append(dict(match, news=[]))
                         logger.info(
